@@ -1,0 +1,270 @@
+# This file contains the fastlane.tools configuration
+# You can find the documentation at https://docs.fastlane.tools
+#
+# For a list of all available actions, check out
+#
+#     https://docs.fastlane.tools/actions
+#
+# For a list of all available plugins, check out
+#
+#     https://docs.fastlane.tools/plugins/available-plugins
+#
+
+# Uncomment the line if you want fastlane to automatically update itself
+# update_fastlane
+
+def cert_json(cert)
+   return {
+       "id" => "#{cert.id}",
+       "name" => "#{cert.name}",
+       "status" => "#{cert.status}",
+       "created" => "#{cert.id}",
+       "expires" => "#{cert.expires}",
+       "owner_type" => "#{cert.owner_type}",
+       "owner_name" => "#{cert.owner_name}",
+       "owner_id" => "#{cert.owner_id}",
+       "type_display_id" => "#{cert.type_display_id}",
+       "can_download" => "#{cert.can_download}"
+   }
+end
+
+def profile_JSON(profile)
+   return {
+        "id" => "#{profile.id}",
+        "uuid" => "#{profile.uuid}",
+        "expires" => "#{profile.expires}",
+        "distribution_method" => "#{profile.distribution_method}",
+        "name" => "#{profile.name}",
+        "status" => "#{profile.status}",
+        "type" => "#{profile.type}",
+        "version" => "#{profile.version}",
+        "platform" => "#{profile.platform}",
+        "sub_platform" => "#{profile.sub_platform}",
+        "managing_app" => "#{profile.managing_app}",
+        "certificates" => certs_json(profile.certificates)
+   }
+end
+
+def profiles_json(profiles)
+    allJSONProfiles = []
+    profiles.each { | profile |
+        profileJSON = profile_JSON(profile)
+        allJSONProfiles.push(profileJSON)
+    }
+    return allJSONProfiles
+end
+
+def certs_json(certs)
+    allJSONCerts = []
+    certs.each { | cert |
+        certJSON = cert_json(cert)
+        allJSONCerts.push(certJSON)
+    }
+    return allJSONCerts
+end
+
+def login(options)
+    username = options[:username]
+    password = options[:password]
+    team = options[:team]
+    begin
+        Spaceship::Portal.login(username, password)
+        Spaceship::Portal.client.team_id = team
+        return nil
+    rescue Spaceship::Client::InvalidUserCredentialsError => e
+        puts e.message
+        puts("Exception occured")
+        return e.message
+    end
+end
+
+def save_json_to_file(json_obj, file_path)
+    File.open(file_path,"w") do |f|
+      f.write("#{JSON.pretty_generate(json_obj)}")
+    end
+    puts "Saved to " + file_path
+end
+
+def save_json_result_to_file(json_obj, file_path)
+    json_obj_wrapped = {"result" => json_obj}
+    save_json_to_file(json_obj_wrapped, file_path)
+end
+
+def save_error_to_file(error, file_path)
+    json_obj = {"error" => error, "result" => []}
+    save_json_to_file(json_obj, file_path)
+end
+
+def save_profiles_response_to_file(profiles, availableCerts, outputPath)
+    
+    profiles.each { |profile|
+        profile.certificates = profile_certificates(profile, availableCerts)
+    }
+    
+    profilesJSON = profiles_json(profiles)
+    availableCertsJSON = certs_json(availableCerts)
+    json_obj_wrapped = {"profiles" => profilesJSON, "availableCertificates" => availableCertsJSON}
+    save_json_to_file(json_obj_wrapped, outputPath)
+end
+
+def available_ios_certificates()
+    return Spaceship::Portal.certificate.AppleDevelopment.all + Spaceship::Portal.certificate.development.all
+end
+
+def profile_certificates(profile, availableCertificates)
+    availableByID = Hash.new
+     availableCertificates.each { |availableCert|
+         availableByID[availableCert.id] = availableCert
+     }
+     
+     replacedCerts = Array.new
+     profile.certificates.each { | profileCert |
+        availableCert = availableByID[profileCert.id]
+        if !availableCert.nil?
+            replacedCerts.push(availableCert)
+        end
+     }
+     
+     return replacedCerts
+     
+end
+
+
+
+#-----------------------------------#
+#------------device_lane------------#
+#-----------------------------------#
+
+  desc "Add New Device to Provisioning Profile"
+  lane :device_lane do |options|
+	
+	Spaceship::Portal.login(options[:username], options[:password])
+    
+	device = Spaceship::Portal.device.all.find { |p| p.udid == options[:udid] }
+	
+	if device.nil?
+		puts("Device udid does not exist in portal... Adding")
+		device = Spaceship::Portal.device.create!(name: options[:name], udid: options[:udid])
+		puts(device)
+	else
+		puts("Device udid already exists in portal. Disabling it so it can be readded")
+		device.disable!
+		device = Spaceship::Portal.device.create!(name: options[:name], udid: options[:udid])
+		puts(device)
+	end
+
+	puts("Adding device to profile")
+	profile = Spaceship::Portal.provisioning_profile.development.all.find { |p| p.name == "Development Profile 10-31-19" }
+	
+	puts("Profile Existing Certificates")
+	puts(profile.certificates)
+	
+	dev_certs = Spaceship::Portal.certificate.development.all
+	puts("Dev certs available")
+	puts(dev_certs)
+	profile.certificates = dev_certs
+	#puts(profile.certificates)
+	devices = Spaceship::Portal.device.all
+	devices.push(device)
+	profile.devices = devices
+	profile.update!
+  end
+  
+  
+  
+#-------------------------------------------------#
+#------------get_ios_certificates_lane------------#
+#-------------------------------------------------#
+
+desc "Gets iOS Certificates"
+lane :get_ios_certificates_lane do |options|
+    outputPath = options[:outputPath]
+
+    err = login(options)
+    if !err.nil?
+        save_error_to_file("Apple Authentication Error", outputPath)
+        next
+    end
+
+    begin
+        available_certs = available_ios_certificates()
+        availableJSONCerts = certs_json(available_certs)
+        puts "#{JSON.pretty_generate(availableJSONCerts)}"
+        save_json_result_to_file(availableJSONCerts, outputPath)
+    rescue Spaceship::UnexpectedResponse => e
+        puts(e.preferred_error_info.join(','))
+        save_error_to_file(e.preferred_error_info.join(','), outputPath)
+        next
+    end
+end
+
+
+#-------------------------------------------------#
+#------------add_ios_certificates_lane------------#
+#-------------------------------------------------#
+
+desc "Add iOS Certificates"
+lane :add_ios_certificates_lane do |options|
+    profileName = options[:extraArg0]
+    outputPath = options[:outputPath]
+
+    err = login(options)
+    if !err.nil?
+        save_error_to_file("Apple Authentication Error", outputPath)
+        next
+    end
+
+    begin
+        profile = Spaceship::Portal.provisioning_profile.development.all.find { |p| p.name == profileName }
+        existing_certs = profile.certificates
+        available_certs = available_ios_certificates()
+        
+        profile.certificates = available_certs + existing_certs
+        profile.update!
+        
+        updatedJSONCerts = certs_json(profile.certificates)
+        save_json_result_to_file(updatedJSONCerts, outputPath)
+        
+    rescue Spaceship::UnexpectedResponse => e
+        puts(e.preferred_error_info.join(','))
+        save_error_to_file(e.preferred_error_info.join(','), outputPath)
+        next
+    end
+end
+
+#=========================================#
+#------------get_profiles_lane------------#
+#=========================================#
+
+desc "Gets Profiles"
+lane :get_profiles_lane do |options|
+    outputPath = options[:outputPath]
+    profileName = options[:extraArg0]
+    
+    err = login(options)
+    if !err.nil?
+        save_error_to_file("Apple Authentication Error", outputPath)
+        next
+    end
+
+    begin
+        profiles = Spaceship::Portal.provisioning_profile.development.all
+        if !profileName.nil? && !profileName.empty?
+            profile = profiles.find { |p| p.name == profileName }
+            if !profile.nil?
+                profiles = [profile]
+            else
+                save_error_to_file("Could not find profile with name: #{profileName}", outputPath)
+                next
+            end
+        end
+        availableCerts = available_ios_certificates()
+        save_profiles_response_to_file(profiles, availableCerts, outputPath)
+        
+    rescue Spaceship::UnexpectedResponse => e
+        puts(e.preferred_error_info.join(','))
+        save_error_to_file(e.preferred_error_info.join(','), outputPath)
+        next
+    end
+end
+
