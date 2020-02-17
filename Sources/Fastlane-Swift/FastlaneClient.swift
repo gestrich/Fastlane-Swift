@@ -94,7 +94,8 @@ public class FastlaneClient: NSObject {
         
         let scriptPath = self.resourcesDirectoryPath.appending("/fastlaneScript.sh")
         
-        let outputPath = "/tmp/fastlane.json"
+        let randomNum = Int.random(in: 0..<10000000000)
+        let outputPath = "/tmp/fastlane-\(randomNum).json"
         let outputURL = URL(fileURLWithPath: outputPath)
         if FileManager.default.fileExists(atPath: outputPath){
             do {
@@ -108,7 +109,14 @@ public class FastlaneClient: NSObject {
         let _ = shell(arguments: allArgs)
         
         guard let jsonData = try? Data(contentsOf: outputURL) else {
+            try? FileManager.default.removeItem(atPath: outputPath)
             throw FastLaneClientError(reason: "Error decoding result")
+        }
+        
+        do {
+            try FileManager.default.removeItem(atPath: outputPath)
+        } catch let exc {
+            print("Error deleting file \(exc)")
         }
         
         return jsonData
